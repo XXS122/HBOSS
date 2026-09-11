@@ -45,3 +45,6 @@ openvla/datasets/*
 *.pth
 *.pt
 /docs/research/skill-handoff/sources/
+# Keep server experiment documentation despite the upstream experiments/ rule.
+!/docs/experiments/
+!/docs/experiments/**
