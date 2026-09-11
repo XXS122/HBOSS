@@ -23,11 +23,39 @@ BOSS-main/
 
 **本流程不需要执行旧的 `form_boss_44_dataset.py`。** 新准备脚本按实际技能注册表选取 44 个文件，默认建立软链接并保留全部原始示范；已有 `boss_44` 不覆盖。同时将根目录 assets 链接到原对象代码硬编码的 `libero/libero/assets`，生成当前服务器的 `.boss/server/config.yaml`。这些步骤每次启动自动检查，原 `.boss/config.yaml` 不修改。
 
-不需要先下载 BOSS 策略权重，本流程会训练并保存它们。语言编码仍使用原代码的 `bert-base-cased`，首次运行需要下载到项目 `bert/` 缓存；它是语言编码器，不是机器人策略权重。若服务器不能访问 Hugging Face，可在能联网且装好本环境的机器上，从项目根目录运行下列命令，再复制整个 `bert/`：
+不需要先下载 BOSS 策略权重，本流程会训练并保存它们。语言编码器改为**仅从本地目录加载**，训练和评测共用同一路径，不再自动联网下载 BERT。
+
+在 [google-bert/bert-base-cased 官方文件页](https://huggingface.co/google-bert/bert-base-cased/tree/main) 下载以下五个文件，名称保持不变：
+
+- [config.json](https://huggingface.co/google-bert/bert-base-cased/resolve/main/config.json?download=true)
+- [pytorch_model.bin](https://huggingface.co/google-bert/bert-base-cased/resolve/main/pytorch_model.bin?download=true)
+- [tokenizer_config.json](https://huggingface.co/google-bert/bert-base-cased/resolve/main/tokenizer_config.json?download=true)
+- [tokenizer.json](https://huggingface.co/google-bert/bert-base-cased/resolve/main/tokenizer.json?download=true)
+- [vocab.txt](https://huggingface.co/google-bert/bert-base-cased/resolve/main/vocab.txt?download=true)
+
+权重 `pytorch_model.bin` 约 436 MB，下载实际文件而非 Git LFS 指针。当前固定的 Transformers 4.21.1 环境使用这个 PyTorch 文件，不用下载 TensorFlow/Flax 权重，也不要只放 `model.safetensors`。
+
+上传后的默认目录如下（项目名为 HBOSS 或 BOSS-main 均可，路径由代码位置计算）：
+
+```text
+HBOSS/bert/bert-base-cased/
+├── config.json
+├── pytorch_model.bin
+├── tokenizer_config.json
+├── tokenizer.json
+└── vocab.txt
+```
+
+这是一份直接包含模型文件的目录，不是 Hugging Face 的 `blobs/snapshots` 缓存父目录。按默认位置放好后，直接使用后文的 smoke/pilot 命令。若放在其他位置，在同一终端设置：
 
 ```bash
-python -c 'from transformers import AutoTokenizer, AutoModel; AutoTokenizer.from_pretrained("bert-base-cased", cache_dir="./bert"); AutoModel.from_pretrained("bert-base-cased", cache_dir="./bert")'
+export BOSS_BERT_PATH=/data/models/bert-base-cased
+python scripts/run_handoff_experiment.py --stage smoke
 ```
+
+启动器的子进程会继承此路径。运行预检检查五个文件是否齐全，实际模型/分词器加载使用 `local_files_only=True`；缺文件直接报错，不回退到在线下载。`runtime.json` 记录解析后的路径。BERT 文件仍被 `bert/` 的 Git 忽略规则排除，需单独传输。
+
+若只下载了 LIBERO-100 压缩包，仍需先解压，将其中的 `libero_90` 目录放到 `datasets/libero_90/`（里面直接是 HDF5 文件）。`run_handoff_experiment.py` 会调用 `prepare_handoff.py` 自动建立 `datasets/boss_44/`；不用额外执行旧的 `form_boss_44_dataset.py`。也可以先单独运行 `python scripts/prepare_handoff.py --inspect-data` 检查整理结果。
 
 ## 2. 安装 BC 环境
 

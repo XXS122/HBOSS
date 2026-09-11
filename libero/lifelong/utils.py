@@ -8,7 +8,6 @@ import numpy as np
 import robomimic.utils.tensor_utils as TensorUtils
 import torch
 import torch.nn as nn
-from hydra.utils import to_absolute_path
 from thop import profile
 from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer, logging
@@ -141,6 +140,20 @@ def create_experiment_dir(cfg, version=None):
     return True
 
 
+def get_bert_directory():
+    """Resolve the manually downloaded BERT folder; never fall back to the Hub."""
+    default = Path(__file__).resolve().parents[2] / "bert/bert-base-cased"
+    directory = Path(os.environ.get("BOSS_BERT_PATH", str(default))).expanduser().resolve()
+    required = ("config.json", "pytorch_model.bin", "tokenizer_config.json", "tokenizer.json", "vocab.txt")
+    missing = [name for name in required if not (directory / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Local BERT files missing in {directory}: {', '.join(missing)}. "
+            "Download google-bert/bert-base-cased here or set BOSS_BERT_PATH."
+        )
+    return directory
+
+
 def get_task_embs(cfg, descriptions):
     logging.set_verbosity_error()
 
@@ -151,11 +164,12 @@ def get_task_embs(cfg, descriptions):
         descriptions = [f"Task {i+offset}" for i in range(len(descriptions))]
 
     if cfg.task_embedding_format == "bert" or cfg.task_embedding_format == "one-hot":
+        bert_directory = str(get_bert_directory())
         tz = AutoTokenizer.from_pretrained(
-            "bert-base-cased", cache_dir=to_absolute_path("./bert")
+            bert_directory, local_files_only=True
         )
         model = AutoModel.from_pretrained(
-            "bert-base-cased", cache_dir=to_absolute_path("./bert")
+            bert_directory, local_files_only=True
         )
         tokens = tz(
             text=descriptions,  # the sentence to be encoded

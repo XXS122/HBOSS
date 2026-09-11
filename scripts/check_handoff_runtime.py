@@ -19,6 +19,8 @@ def main():
     from libero.libero.benchmark import get_benchmark
     from libero.libero.envs import OffScreenRenderEnv
     from libero.lifelong.policy_starter import PolicyStarter
+    from libero.lifelong.utils import get_bert_directory
+    bert_directory = get_bert_directory()
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA unavailable; check NVIDIA driver and cu121 PyTorch")
     # Exercise the GPU, not just the discovery API.
@@ -33,7 +35,7 @@ def main():
         for _ in range(5):
             obs, _, _, _ = env.step(np.zeros(7))
         assert obs["agentview_image"].shape == (128, 128, 3)
-        report = dict(python=platform.python_version(), torch=torch.__version__, cuda=torch.version.cuda,
+        report = dict(bert_directory=str(bert_directory), python=platform.python_version(), torch=torch.__version__, cuda=torch.version.cuda,
                       gpu=torch.cuda.get_device_name(0), gpu_gib=torch.cuda.get_device_properties(0).total_memory / 2**30,
                       robosuite=robosuite.__version__, mujoco=mujoco.__version__, gpu_matmul=value,
                       rendered_rgb_shape=list(obs["agentview_image"].shape), status="passed")
