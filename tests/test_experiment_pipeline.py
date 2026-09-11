@@ -1,4 +1,8 @@
 import importlib.util
+import contextlib
+import io
+import os
+import sys
 import csv
 import json
 from pathlib import Path
@@ -28,6 +32,42 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(evals), 6)
         self.assertEqual(len({cmd[cmd.index("--model-dir")+1] for cmd in evals}), 1)
         self.assertEqual({cmd[cmd.index("--reset-mode")+1] for cmd in evals}, {"original", "none"})
+
+    def test_step_streams_before_exit_saves_stderr_and_preserves_failure_code(self):
+        m = self.module("run_handoff_experiment")
+        self.assertTrue(hasattr(m, "run_logged"), "Live subprocess output is missing")
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "train.log"
+            acknowledgement = Path(tmp) / "ack"
+            test = self
+
+            class LiveConsole(io.StringIO):
+                def write(self, text):
+                    if "ready" in text:
+                        # The child cannot exit until both outputs have been delivered.
+                        test.assertIn("ready", log_path.read_text(encoding="utf-8"))
+                        acknowledgement.touch()
+                    return super().write(text)
+
+            code = """import sys, time
+from pathlib import Path
+print('ready', flush=True)
+deadline = time.monotonic() + 5
+while not Path(sys.argv[1]).exists():
+    if time.monotonic() > deadline:
+        sys.exit(9)
+    time.sleep(0.01)
+sys.stderr.write('error without newline')
+sys.stderr.flush()
+sys.exit(7)
+"""
+            console = LiveConsole()
+            with contextlib.redirect_stdout(console):
+                status = m.run_logged([sys.executable, "-u", "-c", code, str(acknowledgement)],
+                                      log_path, os.environ.copy())
+            self.assertEqual(status, 7)
+            self.assertEqual(console.getvalue(), "ready\nerror without newline")
+            self.assertEqual(log_path.read_text(encoding="utf-8"), console.getvalue())
 
     def test_existing_weights_never_trigger_training(self):
         m = self.module("run_handoff_experiment")

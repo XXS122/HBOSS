@@ -75,6 +75,29 @@ def build_commands(args, run_id):
     return commands
 
 
+def run_logged(cmd, log_path, env):
+    """Stream merged subprocess output to the console and flush it to disk."""
+    with log_path.open("w", encoding="utf-8") as log, subprocess.Popen(
+        cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+    ) as process:
+        try:
+            for line in process.stdout:
+                log.write(line)
+                log.flush()
+                print(line, end="", flush=True)
+            return process.wait()
+        except BaseException:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            raise
+
+
 def main():
     args = parse_args()
     run_id = args.stage + "_" + datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
@@ -100,10 +123,9 @@ def main():
     try:
         for name, cmd in commands:
             print(f"[{name}] {shlex.join(cmd)}", flush=True)
-            with (run_dir / f"{name}.log").open("w", encoding="utf-8") as log:
-                result = subprocess.run(cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
-            if result.returncode:
-                raise RuntimeError(f"{name} failed (exit {result.returncode}). See {run_dir / (name + '.log')}")
+            returncode = run_logged(cmd, run_dir / f"{name}.log", env)
+            if returncode:
+                raise RuntimeError(f"{name} failed (exit {returncode}). See {run_dir / (name + '.log')}")
             if name == "prepare":
                 for filename in ("config.yaml", "data_inventory.json"):
                     shutil.copy2(ROOT / ".boss/server" / filename, run_dir / filename)
