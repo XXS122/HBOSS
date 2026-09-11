@@ -1,0 +1,47 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - data: default
+  - policy: bc_transformer_policy
+  - train: default
+  - eval: default
+  - lifelong: base
+  - test: null
+
+seed: 10000
+use_wandb: true
+wandb_project: "BOSS Training & Evaluation"
+folder: "./libero/datasets/"
+bddl_folder: "./libero/libero/bddl_files"
+init_states_folder: "./libero/libero/init_files"
+device: "cuda:7"
+task_embedding_format: "bert"
+task_embedding_one_hot_offset: 1
+pretrain: false
+pretrain_model_path: ""
+benchmark_name: "boss_44"
+#version: "0.0.0"
+version: "history_length"
+task_num_to_use: null
+# Global benchmark IDs for independent-skill pilot training; null means all tasks.
+train_task_ids: null
+
+# BL3 related parameters
+
+#bl3_folder: "bl3"
+#bl3_mapping: "bl3.json"
+#only_success: false
+#ratio: 1.0
+
+#bl3_folder: "bl3_seed10000"
+#bl3_mapping: "bl3_seed10000.json"
+#only_success: true
+#ratio: 1.0
+
+bl3_folder: "bl3_all"
+bl3_mapping: "bl3_all.json"
+only_success: true
+ratio: 1.0
+
+is_debug: false
