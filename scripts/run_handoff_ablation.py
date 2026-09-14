@@ -1,4 +1,4 @@
-"""Run the paired six-condition test with existing pilot weights."""
+"""Run paired handoff tests with existing pilot weights."""
 import argparse
 from datetime import datetime
 import os
@@ -13,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model-dir', type=Path, required=True)
     parser.add_argument('--states', type=int, default=20)
+    parser.add_argument('--position-source', type=Path, help='Reuse a completed v2 evaluation for four position groups')
     parser.add_argument('--eval-seeds', type=int, nargs='+', default=[10000, 20000, 30000])
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--dry-run', action='store_true')
@@ -26,6 +27,8 @@ def main():
     command = [sys.executable, '-m', 'libero.lifelong.ablate_handoff',
         '--model-dir', str(args.model_dir.resolve()), '--output', str(directory / 'evaluation'),
         '--states', str(args.states), '--eval-seeds', *map(str, args.eval_seeds)]
+    if args.position_source:
+        command += ['--position-source', str(args.position_source.resolve())]
     print(shlex.join(command), flush=True)
     if args.dry_run:
         return

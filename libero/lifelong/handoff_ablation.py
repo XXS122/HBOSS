@@ -2,6 +2,7 @@
 import numpy as np
 
 MODES = ('none', 'position', 'velocity', 'both', 'settle', 'legacy')
+POSITION_MODES = ('keep_position', 'reset_arm', 'reset_gripper', 'reset_both')
 
 
 def collection_attempts(n_initial, requested):
@@ -32,17 +33,21 @@ def joint_layout(env):
 
 
 def intervene(state, reference, layout, mode):
-    if mode not in MODES:
+    if mode not in MODES + POSITION_MODES:
         raise ValueError(mode)
     state, reference = np.asarray(state), np.asarray(reference)
     if (state.shape != (1 + layout['nq'] + layout['nv'],) or reference.shape != state.shape
             or not np.isfinite(state).all() or not np.isfinite(reference).all()):
         raise ValueError('Invalid flattened simulator state')
     result = state.copy()
-    if mode in ('position', 'both'):
+    if mode in ('position', 'both', 'reset_both'):
         indexes = np.array(layout['arm_qpos'] + layout['gripper_qpos']) + 1
         result[indexes] = reference[indexes]
-    if mode in ('velocity', 'both'):
+    elif mode in ('reset_arm', 'reset_gripper'):
+        group = 'arm_qpos' if mode == 'reset_arm' else 'gripper_qpos'
+        indexes = np.array(layout[group]) + 1
+        result[indexes] = reference[indexes]
+    if mode in ('velocity', 'both') or mode in POSITION_MODES:
         indexes = np.array(layout['arm_qvel'] + layout['gripper_qvel']) + 1 + layout['nq']
         result[indexes] = 0
     if mode == 'legacy':

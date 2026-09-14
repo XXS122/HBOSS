@@ -4,6 +4,7 @@ import csv
 from collections import Counter
 import json
 import os
+import shutil
 from pathlib import Path
 import time
 
@@ -17,6 +18,7 @@ def parse_args(argv=None):
     parser.add_argument('--model-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--states', type=int, default=20)
+    parser.add_argument('--position-source', type=Path, help='Completed v2 evaluation directory; run four position groups using its snapshots')
     parser.add_argument('--eval-seeds', type=int, nargs='+', default=[10000, 20000, 30000])
     args = parser.parse_args(argv)
     if args.states < 1 or min(args.eval_seeds) < 0 or max(args.eval_seeds) >= 2**32:
@@ -46,8 +48,9 @@ def main():
     from libero.lifelong.policy_starter import PolicyStarter
     from libero.lifelong.metric import raw_obs_to_tensor_obs
     from libero.lifelong.utils import control_seed, get_task_embs
-    from libero.lifelong.handoff_ablation import MODES, joint_layout, intervene, restore, settle, evaluate_stage, collection_attempts
+    from libero.lifelong.handoff_ablation import MODES, POSITION_MODES, joint_layout, intervene, restore, settle, evaluate_stage, collection_attempts
 
+    modes = POSITION_MODES if args.position_source else MODES
     if not torch.cuda.is_available():
         raise RuntimeError('CUDA is required')
     if robosuite.__version__ != '1.4.1':
@@ -65,11 +68,13 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     sources = [Path(__file__), ROOT / 'libero/lifelong/handoff_ablation.py',
                ROOT / 'libero/libero/envs/env_wrapper.py', ROOT / 'scripts/run_handoff_ablation.py']
-    manifest = dict(status='running', protocol='paired_handoff_ablation_v2',
+    if args.position_source:
+        sources.append(ROOT / 'libero/lifelong/handoff_pool.py')
+    manifest = dict(status='running', protocol='paired_handoff_position_v1' if args.position_source else 'paired_handoff_ablation_v2',
         states_requested=args.states, eval_seeds=args.eval_seeds, collection_seed=10000,
-        policy_budget=400, settle_budget=40, settle_consecutive_steps=5,
+        policy_budget=400, settle_budget=0 if args.position_source else 40, settle_consecutive_steps=5,
         arm_velocity_threshold_rad_s=.02, gripper_velocity_threshold_m_s=.002,
-        control_hz=20, modes=list(MODES), tasks=[t.name for t in chain.tasks[:2]],
+        control_hz=20, modes=list(modes), tasks=[t.name for t in chain.tasks[:2]],
         torch=torch.__version__, robosuite=robosuite.__version__, mujoco=mujoco.__version__,
         gpu=torch.cuda.get_device_name(0),
         checkpoints={str(i): dict(path=str(p), sha256=file_hash(p)) for i, p in checkpoints.items()},
@@ -107,9 +112,9 @@ def main():
         embs = get_task_embs(configs[0], [t.language for t in original.tasks])
         ObsUtils.initialize_obs_utils_with_obs_specs({'obs': configs[0].data.obs.modality})
         manifest['training_seeds'] = [int(c.seed) for c in configs]
-        manifest['attempt_limit'] = args.states * 10
+        manifest['attempt_limit'] = 0 if args.position_source else args.states * 10
         manifest['initial_state_counts'] = [len(states) for states in initial]
-        manifest['collection_sampling'] = 'cycle_initial_states_with_new_rollout_seeds'
+        manifest['collection_sampling'] = 'saved_terminal_states' if args.position_source else 'cycle_initial_states_with_new_rollout_seeds'
         source, target = environments
         for env in environments:
             env.reset()
@@ -140,44 +145,61 @@ def main():
         pool = []
         snapshots = args.output / 'snapshots'
         snapshots.mkdir()
-        with (args.output / 'collection.jsonl').open('w', encoding='utf-8') as log:
-            for sample in collection_attempts(len(initial[0]), args.states):
-                attempt, initial_index, seed = sample['attempt'], sample['initial_index'], sample['seed']
-                control_seed(seed)
-                source.seed(seed)
-                source.reset()
-                check_layout(source)
-                obs = source.set_init_state(initial[0][initial_index])
-                for _ in range(5):
-                    obs, _, _, _ = source.step(np.zeros(7))
-                policies[0].reset()
-                steps = 0
-                initial_valid = not bottom(source) and not top(source)
-                if initial_valid:
-                    while steps < 400 and not source.check_success():
-                        obs, _, _, _ = source.step(action(0, obs))
-                        steps += 1
-                accepted = initial_valid and bool(source.check_success()) and bottom(source) and not top(source)
-                row = dict(**sample, initial_valid=initial_valid, steps=steps, accepted=accepted)
-                if accepted:
-                    state = source.get_sim_state().copy()
-                    reference_index = initial_index % len(initial[1])
-                    reference = initial[1][reference_index].copy()
-                    state_id = len(pool)
-                    filename = f'state{state_id:03d}.npz'
-                    np.savez_compressed(snapshots / filename, terminal=state, reference=reference,
-                        source_rgb=obs['agentview_image'],
-                        source_ctrl=source.sim.data.ctrl.copy(),
-                        source_gripper_command=source.robots[0].gripper.current_action.copy())
-                    row.update(state_id=state_id, snapshot=filename, sha256=file_hash(snapshots / filename),
-                               reference_index=reference_index)
-                    pool.append((state, reference, sample))
-                append(log, row)
-                print(f'[collect] attempt {attempt + 1}/{manifest["attempt_limit"]} initial={initial_index}: {len(pool)}/{args.states} states', flush=True)
-                if len(pool) == args.states:
-                    break
+        if args.position_source:
+            from libero.lifelong.handoff_pool import load_replay_pool
+            pool, provenance = load_replay_pool(args.position_source, args.states, manifest, layout, args.eval_seeds)
+            manifest['source_evaluation'] = provenance
+            manifest['collection_attempts'] = 0
+            manifest['robot_velocity_at_entry'] = 'zero'
+            manifest['object_velocity_at_entry'] = 'retained'
+            shutil.copy2(args.position_source / 'collection.jsonl', args.output / 'source_collection.jsonl')
+            with (args.output / 'collection.jsonl').open('w', encoding='utf-8') as log:
+                for state, reference, sample in pool:
+                    source.set_init_state(state)
+                    if not bottom(source) or top(source):
+                        raise ValueError('Saved state must satisfy Task 1 and not Task 2')
+                    shutil.copy2(args.position_source / 'snapshots' / sample['snapshot'], snapshots / sample['snapshot'])
+                    append(log, dict(sample, reused=True))
+            print(f'[replay] loaded {len(pool)} verified terminal states; no new collection', flush=True)
+        else:
+            with (args.output / 'collection.jsonl').open('w', encoding='utf-8') as log:
+                for sample in collection_attempts(len(initial[0]), args.states):
+                    attempt, initial_index, seed = sample['attempt'], sample['initial_index'], sample['seed']
+                    control_seed(seed)
+                    source.seed(seed)
+                    source.reset()
+                    check_layout(source)
+                    obs = source.set_init_state(initial[0][initial_index])
+                    for _ in range(5):
+                        obs, _, _, _ = source.step(np.zeros(7))
+                    policies[0].reset()
+                    steps = 0
+                    initial_valid = not bottom(source) and not top(source)
+                    if initial_valid:
+                        while steps < 400 and not source.check_success():
+                            obs, _, _, _ = source.step(action(0, obs))
+                            steps += 1
+                    accepted = initial_valid and bool(source.check_success()) and bottom(source) and not top(source)
+                    row = dict(**sample, initial_valid=initial_valid, steps=steps, accepted=accepted)
+                    if accepted:
+                        state = source.get_sim_state().copy()
+                        reference_index = initial_index % len(initial[1])
+                        reference = initial[1][reference_index].copy()
+                        state_id = len(pool)
+                        filename = f'state{state_id:03d}.npz'
+                        np.savez_compressed(snapshots / filename, terminal=state, reference=reference,
+                            source_rgb=obs['agentview_image'],
+                            source_ctrl=source.sim.data.ctrl.copy(),
+                            source_gripper_command=source.robots[0].gripper.current_action.copy())
+                        row.update(state_id=state_id, snapshot=filename, sha256=file_hash(snapshots / filename),
+                                   reference_index=reference_index)
+                        pool.append((state, reference, sample))
+                    append(log, row)
+                    print(f'[collect] attempt {attempt + 1}/{manifest["attempt_limit"]} initial={initial_index}: {len(pool)}/{args.states} states', flush=True)
+                    if len(pool) == args.states:
+                        break
+            manifest['collection_attempts'] = attempt + 1
         manifest['states_collected'] = len(pool)
-        manifest['collection_attempts'] = attempt + 1
         counts = Counter(sample['initial_index'] for _, _, sample in pool)
         manifest['accepted_by_initial_index'] = {str(i): counts[i] for i in range(len(initial[0]))}
         if len(pool) != args.states:
@@ -187,7 +209,7 @@ def main():
             for state_id, (state, reference, sample) in enumerate(pool):
                 for root_seed in args.eval_seeds:
                     seed = seed_for(root_seed, state_id)
-                    for mode in MODES:
+                    for mode in modes:
                         start = time.perf_counter()
                         control_seed(seed)
                         target.seed(seed)
@@ -243,7 +265,7 @@ def main():
                               f'success={result["success"]} preserved={result["predecessor_always"]} '
                               f'wait={wait_steps} steps={result["policy_steps"]}', flush=True)
         summary = []
-        for mode in MODES:
+        for mode in modes:
             for seed in [None] + args.eval_seeds:
                 rows = [r for r in records if r['mode'] == mode and (seed is None or r['evaluation_seed'] == seed)]
                 summary.append(dict(mode=mode, evaluation_seed='all' if seed is None else seed, episodes=len(rows),
@@ -259,6 +281,20 @@ def main():
             writer.writeheader()
             writer.writerows(summary)
         write_json(args.output / 'summary.json', summary)
+        if args.position_source:
+            labels = dict(keep_position='位置均不复位', reset_arm='仅机械臂位置复位',
+                          reset_gripper='仅夹爪位置复位', reset_both='两者位置均复位')
+            report = ['# 机械臂与夹爪位置对照', '',
+                '四组统一清零机械臂和夹爪速度，物体速度保留。', '',
+                '| 操作 | Task 1：下层抽屉打开成功（复用样本） | Task 2：上层抽屉打开成功 | 执行期间下层抽屉保持打开 |',
+                '|---|---:|---:|---:|']
+            for row in summary:
+                if row['evaluation_seed'] == 'all':
+                    report.append(f"| {labels[row['mode']]} | {len(pool)}/{len(pool)} | "
+                        f"{row['successes']}/{row['episodes']} | {row['predecessor_always_count']}/{row['episodes']} |")
+            report += ['', 'Task 1 本轮没有重新执行；各组复用相同成功终止状态，再按评估 seed 重复执行 Task 2。',
+                       '多个终止状态可能来自同一初始场景，不能把评估次数当作独立场景数。']
+            (args.output / 'report.md').write_text('\n'.join(report) + '\n', encoding='utf-8')
         manifest['status'] = 'complete'
     except BaseException:
         manifest['status'] = 'failed'
