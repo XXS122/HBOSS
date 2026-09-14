@@ -30,7 +30,7 @@ def reset_robot_state(current, reference, mode):
         raise ValueError("Incompatible BOSS flattened state vectors")
     result = current.copy()
     if mode == "original":
-        # Preserve the published script's convention, including ALL velocities.
+        # Preserve the published fixed slices; [41:] is not a general qvel offset.
         result[1:10] = reference[1:10]
         result[41:] = reference[41:]
     return result
