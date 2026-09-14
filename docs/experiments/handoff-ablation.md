@@ -37,7 +37,7 @@ python scripts/run_handoff_ablation.py \
   --model-dir experiments/boss_44/handoff_pilot_20260911_045322_1fa6d774/BCTransformerPolicy_seed10000/run_001
 ```
 
-终端实时输出，并保存 `results/handoff_ablation/<运行编号>/ablation.log`。每次运行独立保存，不覆盖已有结果。每次运行只收集一次状态，各组复用。收集依次尝试不同初始状态；数量不足则报错，不以不足样本生成完整比较结果。
+终端实时输出，并保存 `results/handoff_ablation/<运行编号>/ablation.log`。每次运行独立保存，不覆盖已有结果。每次运行只收集一次状态，各组复用。采集轮流使用已有初始状态，每次使用不同的采集 seed。最多尝试目标样本数的 10 倍（默认 200 次），得到 20 个成功终止状态就停止；不足则报错，不生成完整比较结果。
 
 ## 返回哪些结果
 
@@ -45,15 +45,15 @@ python scripts/run_handoff_ablation.py \
 
 - `summary.csv`：分组及分 seed 的成功率、前序目标保持次数、等待超时数。
 - `episodes.jsonl`：每次结果；配对键为 `state_id` 和 `evaluation_seed`。
-- `collection.jsonl`、`snapshots/`：采集成功与失败记录，原始状态、参考状态、干预后状态、模型入口状态和最终状态。
-- `joint_layout.json`、`manifest.json`：关节地址、协议参数、模型/代码/初始状态文件哈希。
+- `collection.jsonl`、`snapshots/`：采集成功与失败记录，每次采集的初始状态编号与 seed，原始状态、参考状态、干预后状态、模型入口状态和最终状态。
+- `joint_layout.json`、`manifest.json`：关节地址、协议参数、初始状态数量及各初始状态贡献的成功样本数、模型/代码/初始状态文件哈希。
 - 六个 MP4：第一个状态、第一个 seed 的各组视频。等待组视频包含等待阶段。
 
 ## 如何解释
 
 先比较 none 与 velocity、position、both，再检查 settle 是否改善成功率且不破坏前序目标。legacy 用于检查旧复位切片与明确的位置/速度操作之间的差别。效果均待实测；位置复位也会改变摄像头图像和接触，不能单凭成功率区分视觉因素和物理因素。
 
-三个评估 seed 复用同一批场景，不是 60 个独立场景。分析差异时以状态为配对单位，同时看分 seed 结果。第一轮只涉及一对技能、一个训练 seed，不据此声称解决所有技能组合。
+协议 v2 支持重复使用初始状态采集。如果文件中只有 3 个初始状态，20 个终止状态仍来自这 3 个初始场景，不能当作 20 个独立场景。三个评估 seed 还会复用这批终止状态。比较各组时按终止状态配对；估计场景泛化能力时按初始状态分组，不能把 60 次评估当作独立场景。重复采集未强制平衡各场景的成功样本数，具体数量见 manifest.json 的 accepted_by_initial_index。第一轮只涉及一对技能、一个训练 seed，不据此声称解决所有技能组合。
 
 ## 实现边界
 

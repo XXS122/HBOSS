@@ -4,6 +4,13 @@ import numpy as np
 MODES = ('none', 'position', 'velocity', 'both', 'settle', 'legacy')
 
 
+def collection_attempts(n_initial, requested):
+    """Cycle initial states with fresh reproducible rollout seeds; bounded retries."""
+    for attempt in range(requested * 10):
+        yield dict(attempt=attempt, initial_index=attempt % n_initial,
+                   seed=int(np.random.SeedSequence([10000, attempt]).generate_state(1)[0]))
+
+
 def joint_layout(env):
     model, robot = env.sim.model, env.robots[0]
     def address(name, kind):

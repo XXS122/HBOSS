@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 import numpy as np
-from libero.lifelong.handoff_ablation import joint_layout, intervene, stopped, evaluate_stage, wait_until_stopped, sync_controller, settle
+from libero.lifelong.handoff_ablation import joint_layout, intervene, stopped, evaluate_stage, wait_until_stopped, sync_controller, settle, collection_attempts
 
 
 class AblationTests(unittest.TestCase):
@@ -153,6 +153,31 @@ class AblationTests(unittest.TestCase):
         sync.assert_called_once()
         for goal in goals:
             np.testing.assert_array_equal(goal, [1., 2., 3.])
+
+    def test_three_initial_states_can_provide_twenty_successful_rollouts(self):
+        accepted = []
+        visited = []
+        for item in collection_attempts(3, 20):
+            visited.append(item)
+            # Simulate one unsuccessful rollout in each cycle.
+            if item['initial_index'] != 1:
+                accepted.append(item)
+            if len(accepted) == 20:
+                break
+        self.assertEqual(len(accepted), 20)
+        self.assertEqual(len(visited), 30)
+        self.assertEqual([r['initial_index'] for r in visited[:6]], [0, 1, 2, 0, 1, 2])
+        self.assertEqual(len({r['seed'] for r in visited}), len(visited))
+        self.assertEqual(visited[:3], [
+            dict(attempt=0, initial_index=0, seed=687766700),
+            dict(attempt=1, initial_index=1, seed=1035087755),
+            dict(attempt=2, initial_index=2, seed=4224662479)])
+
+    def test_collection_stops_at_attempt_limit_and_is_reproducible(self):
+        first = list(collection_attempts(3, 20))
+        self.assertEqual(len(first), 200)
+        self.assertEqual(first[-1]['attempt'], 199)
+        self.assertEqual(first, list(collection_attempts(3, 20)))
 
 
 if __name__ == '__main__':

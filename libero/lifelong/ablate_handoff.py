@@ -1,6 +1,7 @@
 """Paired, frozen-policy task-2 to task-3 ablation; no training."""
 import argparse
 import csv
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -45,7 +46,7 @@ def main():
     from libero.lifelong.policy_starter import PolicyStarter
     from libero.lifelong.metric import raw_obs_to_tensor_obs
     from libero.lifelong.utils import control_seed, get_task_embs
-    from libero.lifelong.handoff_ablation import MODES, joint_layout, intervene, restore, settle, evaluate_stage
+    from libero.lifelong.handoff_ablation import MODES, joint_layout, intervene, restore, settle, evaluate_stage, collection_attempts
 
     if not torch.cuda.is_available():
         raise RuntimeError('CUDA is required')
@@ -64,7 +65,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     sources = [Path(__file__), ROOT / 'libero/lifelong/handoff_ablation.py',
                ROOT / 'libero/libero/envs/env_wrapper.py', ROOT / 'scripts/run_handoff_ablation.py']
-    manifest = dict(status='running', protocol='paired_handoff_ablation_v1',
+    manifest = dict(status='running', protocol='paired_handoff_ablation_v2',
         states_requested=args.states, eval_seeds=args.eval_seeds, collection_seed=10000,
         policy_budget=400, settle_budget=40, settle_consecutive_steps=5,
         arm_velocity_threshold_rad_s=.02, gripper_velocity_threshold_m_s=.002,
@@ -106,9 +107,9 @@ def main():
         embs = get_task_embs(configs[0], [t.language for t in original.tasks])
         ObsUtils.initialize_obs_utils_with_obs_specs({'obs': configs[0].data.obs.modality})
         manifest['training_seeds'] = [int(c.seed) for c in configs]
-        manifest['attempt_limit'] = len(initial[0])
-        if args.states > len(initial[0]):
-            raise ValueError('Requested pool exceeds distinct predecessor initial states')
+        manifest['attempt_limit'] = args.states * 10
+        manifest['initial_state_counts'] = [len(states) for states in initial]
+        manifest['collection_sampling'] = 'cycle_initial_states_with_new_rollout_seeds'
         source, target = environments
         for env in environments:
             env.reset()
@@ -140,13 +141,13 @@ def main():
         snapshots = args.output / 'snapshots'
         snapshots.mkdir()
         with (args.output / 'collection.jsonl').open('w', encoding='utf-8') as log:
-            for attempt in range(len(initial[0])):
-                seed = seed_for(10000, attempt)
+            for sample in collection_attempts(len(initial[0]), args.states):
+                attempt, initial_index, seed = sample['attempt'], sample['initial_index'], sample['seed']
                 control_seed(seed)
                 source.seed(seed)
                 source.reset()
                 check_layout(source)
-                obs = source.set_init_state(initial[0][attempt])
+                obs = source.set_init_state(initial[0][initial_index])
                 for _ in range(5):
                     obs, _, _, _ = source.step(np.zeros(7))
                 policies[0].reset()
@@ -157,10 +158,10 @@ def main():
                         obs, _, _, _ = source.step(action(0, obs))
                         steps += 1
                 accepted = initial_valid and bool(source.check_success()) and bottom(source) and not top(source)
-                row = dict(attempt=attempt, seed=seed, initial_valid=initial_valid, steps=steps, accepted=accepted)
+                row = dict(**sample, initial_valid=initial_valid, steps=steps, accepted=accepted)
                 if accepted:
                     state = source.get_sim_state().copy()
-                    reference_index = attempt % len(initial[1])
+                    reference_index = initial_index % len(initial[1])
                     reference = initial[1][reference_index].copy()
                     state_id = len(pool)
                     filename = f'state{state_id:03d}.npz'
@@ -170,17 +171,20 @@ def main():
                         source_gripper_command=source.robots[0].gripper.current_action.copy())
                     row.update(state_id=state_id, snapshot=filename, sha256=file_hash(snapshots / filename),
                                reference_index=reference_index)
-                    pool.append((state, reference))
+                    pool.append((state, reference, sample))
                 append(log, row)
-                print(f'[collect] attempt {attempt + 1}/{len(initial[0])}: {len(pool)}/{args.states} states', flush=True)
+                print(f'[collect] attempt {attempt + 1}/{manifest["attempt_limit"]} initial={initial_index}: {len(pool)}/{args.states} states', flush=True)
                 if len(pool) == args.states:
                     break
         manifest['states_collected'] = len(pool)
+        manifest['collection_attempts'] = attempt + 1
+        counts = Counter(sample['initial_index'] for _, _, sample in pool)
+        manifest['accepted_by_initial_index'] = {str(i): counts[i] for i in range(len(initial[0]))}
         if len(pool) != args.states:
             raise RuntimeError(f'Only collected {len(pool)}/{args.states}; collection.jsonl records failures. No partial comparison scored.')
         records = []
         with (args.output / 'episodes.jsonl').open('w', encoding='utf-8') as log:
-            for state_id, (state, reference) in enumerate(pool):
+            for state_id, (state, reference, sample) in enumerate(pool):
                 for root_seed in args.eval_seeds:
                     seed = seed_for(root_seed, state_id)
                     for mode in MODES:
@@ -221,7 +225,8 @@ def main():
                         finally:
                             if video:
                                 video.close()
-                        result.update(state_id=state_id, evaluation_seed=root_seed, policy_seed=seed, mode=mode,
+                        result.update(state_id=state_id, initial_index=sample['initial_index'],
+                            collection_seed=sample['seed'], evaluation_seed=root_seed, policy_seed=seed, mode=mode,
                             settle_success=settled, settle_steps=wait_steps, settle_seconds=wait_steps / 20,
                             policy_seconds=result['policy_steps'] / 20,
                             total_seconds=(wait_steps + result['policy_steps']) / 20,
